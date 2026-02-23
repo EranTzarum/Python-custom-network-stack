@@ -5,6 +5,30 @@ This repository is designed as an educational deep-dive into low-level network a
 
 By reading and running this code, students can understand exactly how computers discover each other, resolve names, frame data, and guarantee delivery over unreliable connections.
 
+---
+
+## My Network Architecture
+
+I separated the logic into small, independent files to simulate real, distinct network components:
+
+| File | Role |
+|---|---|
+| `dhcp_server.py` | DHCP Server — assigns an IP address to the client via UDP. |
+| `dns_server.py` | DNS Server — resolves `my-app-server.local` to an IP via UDP. |
+| `app_server.py` | TCP App Server (HTTP Proxy) — receives a `FETCH` command and downloads the file over TCP. |
+| `client.py` | TCP Client — runs the full sequence: DHCP → DNS → TCP fetch → save file. |
+| `app_server_rudp.py` | RUDP App Server — same job as the TCP server but uses my custom reliable UDP protocol. |
+| `client_rudp.py` | RUDP Client — same flow but uses my RUDP protocol for the transfer. |
+
+### The Full Network Flow (Step by Step)
+
+1. The client starts with no IP address. It sends a `DISCOVER` UDP message to the **DHCP Server** at `127.0.0.1:6767`. The server replies with `{"type": "OFFER", "assigned_ip": "127.0.0.2"}`.
+2. Now that it has an IP, the client sends a JSON query `{"domain": "my-app-server.local"}` to the **DNS Server** at `127.0.0.1:5353`. The server replies with `{"status": "SUCCESS", "ip": "127.0.0.3"}`.
+3. The client connects to the **App Server** at `127.0.0.3` and sends a `FETCH http://127.0.0.1:8080/test_file.txt` command.
+4. The App Server downloads the file from the local HTTP server (`python -m http.server 8080`) and sends all the bytes back to the client.
+5. The client saves the received file to disk — `downloaded_from_web.html` (TCP) or `downloaded_rudp.html` (RUDP).
+
+---
 
 
 ---
@@ -98,3 +122,67 @@ python app_server_rudp.py
 python client_rudp.py
 
 ```
+
+
+---
+
+## Protocol Validation & Wireshark Captures
+
+To strictly validate the custom protocol implementation, congestion control algorithms, and overall network behavior, all traffic was captured on the local Loopback adapter. 
+
+Below are the Wireshark screenshots and raw `.pcapng` capture files demonstrating the successful execution of all system phases, including connection establishment, packet loss recovery, and sliding window dynamics.
+
+Wireshark filter used:
+```
+udp.port == 6767 or udp.port == 5353 or tcp.port == 2121 or udp.port == 2122
+```
+
+---
+
+### 1. TCP Complete Flow
+
+Shows the DHCP assignment, DNS resolution, and the full TCP proxy fetch with the framed response.
+
+![Wireshark TCP Capture](captures/wireshark_screenshot.png)
+
+📥 **[Click here to download the raw Wireshark capture file (.pcapng)](captures/part1_flow.pcapng)**
+
+---
+
+### 2. RUDP Foundation & Handshake
+
+Shows the custom SYN, SYN-ACK, and first DATA command exchange over raw UDP using the 11-byte binary header.
+
+![Wireshark RUDP Capture](captures/wireshark_screenshot2.png)
+
+📥 **[Click here to download the raw Wireshark capture file (.pcapng)](captures/part2_flow.pcapng)**
+
+---
+
+### 3. RUDP Stop-and-Wait Clean Flow
+
+Shows the full transfer with the custom 11-byte headers, a single data chunk, and the FIN packet, without any simulated packet loss.
+
+![Wireshark RUDP Clean Flow Capture](captures/wireshark_screenshot3.png)
+
+📥 **[Click here to download the raw Wireshark capture file for the RUDP clean flow (.pcapng)](captures/part3_rudp_clean_flow.pcapng)**
+
+---
+
+### 4. RUDP Packet Loss & Recovery
+
+Shows the server timing out and retransmitting the same chunk multiple times because the client's `SIMULATE_PACKET_LOSS` flag dropped the incoming DATA packets. Proves the Go-Back-N retransmission loop works correctly.
+
+![Wireshark RUDP Packet Loss Capture](captures/wireshark_screenshot4.png)
+
+📥 **[Click here to download the raw Wireshark capture file for the RUDP packet loss flow (.pcapng)](captures/part4_rudp_loss_flow.pcapng)**
+
+---
+
+### 5. RUDP Advanced Flow (Sliding Window & Latency)
+
+Shows the Go-Back-N sliding window session with delayed ACKs caused by the `SIMULATE_LATENCY` flag. The delay between each DATA chunk and its ACK is clearly visible in the packet timestamps.
+
+![Wireshark RUDP Advanced Flow Capture](captures/wireshark_screenshot5.png)
+
+📥 **[Click here to download the raw Wireshark capture file for the RUDP advanced flow (.pcapng)](captures/part5_rudp_advanced_flow.pcapng)**
