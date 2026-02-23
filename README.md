@@ -1,82 +1,57 @@
-# Deep Dive: Custom Network Stack & Reliable UDP (RUDP)
+# Bare-Metal Network Infrastructure & Reliable UDP (RUDP) Stack
 
-## The Core Concept (In Plain English)
-Imagine trying to send a certified document using a delivery service that randomly loses mail, drops packages, and doesn't tell you if the package arrived. That delivery service is **UDP** (User Datagram Protocol) – it's fast, but completely unreliable. 
+## Overview
+This repository contains a complete, custom-built network ecosystem implemented from scratch in Python using only bare-metal OS `socket` libraries. Bypassing high-level networking frameworks, the project explores low-level architecture by building a custom Reliable UDP transport protocol alongside fundamental network infrastructure services (DHCP and DNS).
 
-This project solves that problem from scratch. It builds a custom **Reliable UDP (RUDP)** protocol on top of basic UDP, adding tracking, retries, and delivery confirmations. To make it a complete network ecosystem, it also implements custom **DHCP** (to assign IP addresses) and **DNS** (to translate names into IPs) servers. 
+The system simulates a complete network lifecycle: obtaining an IP, resolving a domain, establishing a handshake, and reliably transferring data over an inherently unreliable network.
 
-Everything is built using Python's bare-metal `socket` library, without relying on external networking frameworks.
+## Core Architecture & Components
 
----
+### 1. Network Services
+* **DHCP Server (Dynamic Host Configuration Protocol):** Listens on UDP port 6767 for incoming `DISCOVER` broadcasts. It manages IP allocation by responding with a JSON `OFFER` assigning a designated IP (e.g., `127.0.0.2`) to the joining client.
+* **DNS Server (Domain Name System):** A custom resolver running on UDP port 5353. It acts as the directory service, mapping human-readable domain names like `my-app-server.local` to their assigned IP addresses (e.g., `127.0.0.3`) using a static record store.
 
-## The Network Components
+### 2. TCP Application Framing
+To handle TCP's stream nature and prevent partial reads, the TCP Application Server (`app_server.py`) implements a custom length-prefix framing protocol.
+* Before transmitting any payload, it prepends a **10-byte zero-padded ASCII length header** (e.g., `0000000065`).
+* The receiver strictly reads this 10-byte header first, converts it to an integer, and loops the `recv()` call until exactly that payload size is accumulated, ensuring complete message boundaries.
 
-### 1. DHCP Server (Dynamic Host Configuration Protocol)
-* **What it does:** Think of it as the "housing authority" of the network. When a new computer (client) joins, it doesn't have an address. The DHCP server leases it an available IP address so it can communicate.
-* **Technical Implementation:** Listens on a specific port for discovery broadcasts. It manages a pool of available IP addresses, assigns them to requesting MAC addresses, and prevents IP conflicts.
+### 3. Custom Reliable UDP (RUDP) Protocol
+The crown jewel of this infrastructure is a robust transport protocol built over standard UDP, ensuring reliable, ordered delivery of data streams.
 
-### 2. DNS Server (Domain Name System)
-* **What it does:** It's the "Contacts App" or "Phonebook" of the network. Humans use names (like `server.local`), but computers need IP addresses (like `192.168.1.50`). 
-* **Technical Implementation:** Maintains a dictionary mapping hostnames to IPs. When a client wants to connect to the RUDP server, it first asks the DNS server to resolve the hostname into a usable IP address.
+* **11-Byte Binary Header:** Every packet utilizes a strict binary header packed via `struct.pack('!IIcH')` containing:
+    * **Sequence Number (4 bytes):** Tracks packet ordering.
+    * **Acknowledgment Number (4 bytes):** Validates delivery.
+    * **Flag (1 byte):** Defines packet state (`S`=SYN, `A`=ACK, `D`=DATA, `F`=FIN).
+    * **Payload Length (2 bytes):** Size of the attached data chunk.
 
----
+* **Congestion Control & Window Management:**
+        * **Go-Back-N (GBN):** Implements a sliding window allowing multiple unACKed packets in flight. On a 1-second timeout, the server resets `next_seq = base_seq` and retransmits the entire window.
+        * **AIMD (Additive Increase / Multiplicative Decrease):** Dynamically shapes traffic. The `window_size` increases by 1 upon valid ACKs (capped at `MAX_WINDOW = 5`), and is halved (`window_size //= 2`) immediately upon detecting packet loss via timeout.
 
-## The Heart of the Project: Reliable UDP (RUDP)
-Standard UDP just fires packets into the network and hopes for the best. Our custom RUDP adds the reliability of TCP while maintaining control over the exact flow of data.
+* **Network Fault Simulation:**
+    To prove algorithmic resilience, the RUDP client deliberately injects network faults:
+    * `SIMULATE_PACKET_LOSS`: Randomly drops ~30% of incoming DATA packets without ACKing them, forcing the server's timeout and GBN loop.
+    * `SIMULATE_LATENCY`: Introduces dynamic delays (`time.sleep(0.1 - 0.4s)`) to test the timeout thresholds and sliding window behavior.
 
-### Connection Establishment (The 3-Way Handshake)
-Before sending data, the client and server must agree to talk.
-1. **SYN:** Client sends a synchronization request ("Are you there?").
-2. **SYN-ACK:** Server responds with an acknowledgment ("I'm here, are you ready?").
-3. **ACK:** Client confirms ("Yes, let's start sending data.").
+## Execution Flow
 
+To simulate the network environment, boot the components sequentially:
 
-### Ensuring Delivery (Sequence & ACKs)
-Every packet of data is assigned a **Sequence Number**. When the server receives packet #1, it sends back an **ACK 1** (Acknowledgment). If the client doesn't receive the ACK within a specific timeframe (Timeout), it assumes the packet was lost in transit and retransmits it.
-
-### Congestion Control (Not breaking the network)
-If we send data too fast, the network routers will choke and drop packets. We manage this using two algorithms:
-
-* **Go-Back-N (GBN):** Instead of waiting for an ACK after *every single packet*, the client sends a "window" of packets (e.g., 5 at a time). If packet #3 is lost, the server drops everything after it, and the client "goes back" and resends from packet #3 onwards.
-
-
-* **AIMD (Additive Increase / Multiplicative Decrease):** The protocol constantly probes the network's capacity. 
-  * *Additive Increase:* If packets are arriving successfully, we slowly increase the transmission speed (adding to the window size).
-  * *Multiplicative Decrease:* The moment a packet is lost, we assume the network is congested and instantly cut the transmission speed in half to let the network recover.
-
-
----
-
-## How to Run the Ecosystem
-
-To see the system in action, you must start the infrastructure in the correct order, simulating a real network boot-up:
-
-**Step 1: Start the Network Services**
-Open a terminal and start the DHCP server to begin assigning IPs:
-```bash
-python DHCP_Server.py
-
-```
-
-Open a second terminal and start the DNS resolver:
-
-```bash
-python DNS_Server.py
-
-```
-
-**Step 2: Start the Application Server**
-Open a third terminal and start the RUDP Server. This server will bind to an IP and wait for reliable connections:
-
-```bash
-python RUDP_Server.py
-
-```
-
-**Step 3: Connect a Client**
-Open a fourth terminal and run the client. The client will dynamically get an IP, resolve the server's name via DNS, perform the 3-way handshake, and securely download the data payload:
-
-```bash
-python Client.py
-
-```
+1.  **Initialize Local File Server (for test payloads):**
+    ```bash
+    python -m http.server 8080
+    ```
+2.  **Start Infrastructure Services:**
+    ```bash
+    python dhcp_server.py
+    python dns_server.py
+    ```
+3.  **Start RUDP File Server:**
+    ```bash
+    python app_server_rudp.py
+    ```
+4.  **Execute Client Transfer:**
+    ```bash
+    python client_rudp.py
+    ```
