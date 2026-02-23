@@ -1,5 +1,3 @@
-
-```markdown
 # Deep Dive: Custom Network Stack & Reliable UDP (RUDP)
 
 ## The Core Concept (In Plain English)
@@ -82,7 +80,3 @@ Open a fourth terminal and run the client. The client will dynamically get an IP
 python Client.py
 
 ```
-
-```
-
-ז
